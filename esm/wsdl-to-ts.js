@@ -1,4 +1,4 @@
-import * as soap from "soap";
+import { open_wsdl } from 'soap/lib/wsdl';
 // import { diffLines } from "diff";
 export const nsEnums = {};
 export class TypeCollector {
@@ -20,6 +20,14 @@ export class TypeCollector {
         return this;
     }
 }
+const predefinedTypeClass = {
+    integer: "number",
+    dateTime: "Date",
+    unsignedLong: "number",
+    double: "number",
+    decimal: "number",
+    long: "number"
+};
 function wsdlTypeToInterfaceObj(obj, typeCollector) {
     const r = {};
     for (const k of Object.keys(obj)) {
@@ -34,7 +42,7 @@ function wsdlTypeToInterfaceObj(obj, typeCollector) {
             const vstr = v;
             const [typeName, superTypeClass, typeData] = vstr.indexOf("|") === -1 ? [vstr, vstr, undefined] : vstr.split("|");
             const typeFullName = obj.targetNamespace ? obj.targetNamespace + "#" + typeName : typeName;
-            let typeClass = superTypeClass === "integer" ? "number" : superTypeClass;
+            let typeClass = predefinedTypeClass[superTypeClass] ? predefinedTypeClass[superTypeClass] : superTypeClass;
             if (nsEnums[typeFullName] || typeData) {
                 const filter = nsEnums[typeFullName] ?
                     () => true :
@@ -152,23 +160,18 @@ function wsdlTypeToInterface(obj, typeCollector, opts) {
 }
 export function wsdl2ts(wsdlUri, opts) {
     return new Promise((resolve, reject) => {
-        soap.createClient(wsdlUri, {}, (err, client) => {
-            if (err) {
-                reject(err);
-            }
-            else {
-                resolve(client);
-            }
+        open_wsdl(wsdlUri, (err, wsdl) => {
+            return err ? reject(err) : resolve(wsdl);
         });
-    }).then((client) => {
+    }).then((wsdl) => {
         const r = {
-            client,
+            client: null,
             files: {},
             methods: {},
             namespaces: {},
             types: {},
         };
-        const d = client.describe();
+        const d = wsdl.describeServices();
         for (const service of Object.keys(d)) {
             for (const port of Object.keys(d[service])) {
                 const collector = new TypeCollector(port + "Types");
@@ -224,14 +227,10 @@ export function wsdl2ts(wsdlUri, opts) {
                     r.types[service][port]["I" + method + "Output"] =
                         wsdlTypeToInterface(d[service][port][method].output || {}, collector, opts);
                     r.methods[service][port][method] =
-                        "(input: I" + method + "Input, " +
-                            "cb: (err: any | null," +
-                            " result: I" + method + "Output," +
-                            " raw: string, " +
-                            " soapHeader: {[k: string]: any; }) => any, " +
-                            "options?: any, " +
-                            "extraHeaders?: any" +
-                            ") => void";
+                        "(input: I" + method + "Input," +
+                            " headers: {[k: string]: any; }," +
+                            " request: IncomingMessage" +
+                            ") => I" + method + "Output | Promise<I" + method + "Output>";
                 }
             }
         }
@@ -301,6 +300,7 @@ export function outputTypedWsdl(a) {
     for (const service of Object.keys(a.files)) {
         for (const port of Object.keys(a.files[service])) {
             const d = { file: a.files[service][port], data: [] };
+            d.data.push("import {IncomingMessage} from 'http'");
             if (a.types[service] && a.types[service][port]) {
                 for (const type of Object.keys(a.types[service][port])) {
                     d.data.push("export interface " + type + " " + a.types[service][port][type]);

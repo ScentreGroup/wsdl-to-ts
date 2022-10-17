@@ -1,7 +1,17 @@
 import * as soap from "soap";
+import { WSDL, open_wsdl } from 'soap/lib/wsdl';
 // import { diffLines } from "diff";
 
 export const nsEnums: { [k: string]: boolean } = {};
+
+const predefinedTypeClass: {[type: string]: string} = {
+    integer: "number",
+    dateTime: "Date",
+    unsignedLong: "number",
+    double: "number",
+    decimal: "number",
+    long: "number"
+}
 
 interface ITwoDown<T> {
     [k: string]: { [k: string]: T };
@@ -61,7 +71,8 @@ function wsdlTypeToInterfaceObj(obj: IInterfaceObject, typeCollector?: TypeColle
             const [typeName, superTypeClass, typeData] =
                 vstr.indexOf("|") === -1 ? [vstr, vstr, undefined] : vstr.split("|");
             const typeFullName = obj.targetNamespace ? obj.targetNamespace + "#" + typeName : typeName;
-            let typeClass = superTypeClass === "integer" ? "number" : superTypeClass;
+            let typeClass = predefinedTypeClass[superTypeClass] ? predefinedTypeClass[superTypeClass] : superTypeClass;
+
             if (nsEnums[typeFullName] || typeData) {
                 const filter = nsEnums[typeFullName] ?
                     () => true :
@@ -172,23 +183,19 @@ function wsdlTypeToInterface(obj: { [k: string]: any }, typeCollector?: TypeColl
 }
 
 export function wsdl2ts(wsdlUri: string, opts?: IInterfaceOptions): Promise<ITypedWsdl> {
-    return new Promise<soap.Client>((resolve, reject) => {
-        soap.createClient(wsdlUri, {}, (err, client) => {
-            if (err) {
-                reject(err);
-            } else {
-                resolve(client);
-            }
-        });
-    }).then((client) => {
+    return new Promise<WSDL>((resolve, reject) => {
+        open_wsdl(wsdlUri, (err, wsdl) => {
+            return err? reject(err) : resolve(wsdl)
+        })
+    }).then((wsdl: WSDL) => {
         const r: ITypedWsdl = {
-            client,
+            client: null,
             files: {},
             methods: {},
             namespaces: {},
             types: {},
         };
-        const d = client.describe();
+        const d: any = wsdl.describeServices();
 
         for (const service of Object.keys(d)) {
             for (const port of Object.keys(d[service])) {
@@ -252,14 +259,10 @@ export function wsdl2ts(wsdlUri: string, opts?: IInterfaceOptions): Promise<ITyp
                     r.types[service][port]["I" + method + "Output"] =
                         wsdlTypeToInterface(d[service][port][method].output || {}, collector, opts);
                     r.methods[service][port][method] =
-                        "(input: I" + method + "Input, " +
-                        "cb: (err: any | null," +
-                        " result: I" + method + "Output," +
-                        " raw: string, " +
-                        " soapHeader: {[k: string]: any; }) => any, " +
-                        "options?: any, " +
-                        "extraHeaders?: any" +
-                        ") => void";
+                        "(input: I" + method + "Input," +
+                        " headers: {[k: string]: any; }," +
+                        " request: IncomingMessage" +
+                        ") => I" + method + "Output | Promise<I" + method + "Output>";
                 }
             }
         }
@@ -270,7 +273,7 @@ export function wsdl2ts(wsdlUri: string, opts?: IInterfaceOptions): Promise<ITyp
 
 function cloneObj<T extends { [k: string]: any }>(a: T): T {
     const b: T = {} as any;
-    for (const k of Object.keys(a)) {
+    for (const k of Object.keys(a) as (keyof T)[]) {
         const t = typeof a[k];
         b[k] = t === "object" ?
             Array.isArray(a[k]) ? a[k].slice() : cloneObj(a[k]) : a[k];
@@ -330,6 +333,7 @@ export function outputTypedWsdl(a: ITypedWsdl): Array<{ file: string, data: stri
     for (const service of Object.keys(a.files)) {
         for (const port of Object.keys(a.files[service])) {
             const d: { file: string, data: string[] } = { file: a.files[service][port], data: [] };
+            d.data.push("import {IncomingMessage} from 'http'")
             if (a.types[service] && a.types[service][port]) {
                 for (const type of Object.keys(a.types[service][port])) {
                     d.data.push("export interface " + type + " " + a.types[service][port][type]);
